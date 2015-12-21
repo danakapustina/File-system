@@ -1,87 +1,164 @@
-//test.cpp
-#include <fuse.h>
+#include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include <fcntl.h>
- 
-static const char *hello_str = "Hello World!\n";
-static const char *hello_path = "/hello";
- 
-static int hello_getattr(const char *path, struct stat *stbuf)
+#ifndef FSACTIONS
+#define FSACTIONS
+#include <fuse.h>
+#define _FILE_OFFSET_BITS 64
+#define FUSE_USE_VERSION 26
+
+
+#pragma pack(1)
+
+
+
+#ifdef DEBUG
+#define TRACE printf("[DEBUG] FILE:%s LINE:%d\n", __FILE__, __LINE__);
+
+#else
+
+#define TRACE
+#endif
+
+#define FILESYSTEM "filesystem"
+#define NUMBER_OF_ROOT_BLOCK 0
+#define SIZE_OF_BLOCK 4096
+#define NODE_NAME_MAX_SIZE 256
+#define BLOCK_STATUS_OFFSET 0
+#define NODE_NAME_OFFSET (BLOCK_STATUS_OFFSET + sizeof(char))
+#define NODE_STAT_OFFSET (NODE_NAME_OFFSET + NODE_NAME_MAX_SIZE)
+#define NODE_CONTENT_OFFSET (NODE_STAT_OFFSET + sizeof(stat_t))
+#define NODE_CONTENT_MAX_SIZE (size_of_block - NODE_CONTENT_OFFSET)
+
+// получаем атрибуты файла
+int my_getattr(const char *path, struct stat *stbuf);
+// получаем сдержимое папки
+int my_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi);
+// определяем опции открытия файла
+int my_open(const char *path, struct fuse_file_info *fi);
+// читаем данные из открытого файла
+int my_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+// предоставляет возможность записать в открытый файл
+
+
+int my_getattr(const char *path, struct stat *stbuf)
 {
-    int res = 0;
- 
-    memset(stbuf, 0, sizeof(struct stat));
-    if(strcmp(path, "/") == 0) {
-        stbuf->st_mode = S_IFDIR | 0755;
-        stbuf->st_nlink = 2;
+    int result = -ENOENT;
+    char **node_names = split_path(path);
+    if (node_names != NULL)
+    {
+        int number = search_inode(number_of_root_block, node_names);
+        if (number >= 0 && get_inode_stat(number, stbuf) == 0)
+        {
+            result = 0;
+        }
+        destroy_node_names(node_names);
     }
-    else if(strcmp(path, hello_path) == 0) {
-        stbuf->st_mode = S_IFREG | 0444;
-        stbuf->st_nlink = 1;
-        stbuf->st_size = strlen(hello_str);
-    }
-    else
-        res = -ENOENT;
- 
-    return res;
+    return result;
 }
- 
-static int hello_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                         off_t offset, struct fuse_file_info *fi)
+
+
+int my_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
-    (void) offset;
-    (void) fi;
- 
-    if(strcmp(path, "/") != 0)
-        return -ENOENT;
- 
-    filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
-    filler(buf, hello_path + 1, NULL, 0);
- 
+    int result = -ENOENT;
+    char **node_names = split_path(path);
+    if (node_names != NULL)
+    {
+        int number = search_inode(number_of_root_block, node_names);
+        if (number >= 0)
+        {
+            inode_t *folder = (inode_t *)get_block(number);
+            if (folder != NULL)
+            {
+                if (folder->status == BLOCK_STATUS_FOLDER)
+                {
+                    result = 0;
+                    filler(buf, ".", NULL, 0);
+                    filler(buf, "..", NULL, 0);
+                    char name[NODE_NAME_MAX_SIZE];
+                    stat_t stat;
+                    int *start = (int *)folder->content;
+                    int *end = (int *)((void *)folder + size_of_block);
+                    while (start < end)
+                    {
+                        if (*start > 0 && get_inode_name(*start, name) == 0 && get_inode_stat(*start, &stat) == 0)
+                        {
+                            if (filler(buf, name, &stat, 0) != 0)
+                            {
+                                break;
+                            }
+                        }
+                        start++;
+                    }
+                }
+                destroy_block(folder);
+            }
+        }
+        destroy_node_names(node_names);
+    }
+    return result;
+}
+
+
+int my_open(const char *path, struct fuse_file_info *fi)
+{
     return 0;
 }
- 
-static int hello_open(const char *path, struct fuse_file_info *fi)
+
+
+int my_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    if(strcmp(path, hello_path) != 0)
-        return -ENOENT;
- 
-    if((fi->flags & 3) != O_RDONLY)
-        return -EACCES;
- 
-    return 0;
+    int result = -ENOENT;
+    char **node_names = split_path(path);
+    if (node_names != NULL)
+    {
+        int number = search_inode(number_of_root_block, node_names);
+        if (number >= 0)
+        {
+            inode_t *file = (inode_t *)get_block(number);
+            if (file != NULL)
+            {
+                if (file->status == BLOCK_STATUS_FILE)
+                {
+                    if (offset < NODE_CONTENT_MAX_SIZE)
+                    {
+                        if (offset + size > NODE_CONTENT_MAX_SIZE)
+                        {
+                            size = NODE_CONTENT_MAX_SIZE - offset;
+                        }
+                        memcpy(buf, file->content + offset, size);
+                        result = size;
+                    }
+                    else
+                    {
+                        result = 0;
+                    }
+                }
+                destroy_block(file);
+            }
+        }
+        destroy_node_names(node_names);
+    }
+    return result;
 }
- 
-static int hello_read(const char *path, char *buf, size_t size, off_t offset,
-                      struct fuse_file_info *fi)
+
+
+
+
+// структура определенных мной операций
+struct fuse_operations my_oper =
 {
-    size_t len;
-    (void) fi;
-    if(strcmp(path, hello_path) != 0)
-        return -ENOENT;
- 
-    len = strlen(hello_str);
-    if (offset < len) {
-        if (offset + size > len)
-            size = len - offset;
-        memcpy(buf, hello_str + offset, size);
-    } else
-        size = 0;
- 
-    return size;
-}
- 
-static struct fuse_operations hello_oper;
- 
+    .getattr    = my_getattr,
+    .readdir    = my_readdir,
+    .open       = my_open,
+    .read       = my_read,
+    
+};
+
 int main(int argc, char *argv[])
 {
-    hello_oper.getattr = hello_getattr;
-    hello_oper.readdir = hello_readdir;
-    hello_oper.open = hello_open;
-    hello_oper.read = hello_read;
- 
-    return fuse_main(argc, argv, &hello_oper, 0);
+   
+    return fuse_main(argc, argv, &my_oper, NULL);
 }
