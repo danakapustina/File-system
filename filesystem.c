@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-
+#include "fsactions.h"
 
 // получаем атрибуты файла
 int my_getattr(const char *path, struct stat *stbuf);

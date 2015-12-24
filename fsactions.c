@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-
+#include "fsactions.h"
 
 const int size_of_block = SIZE_OF_BLOCK;
 int filesystem_fd = -1;
